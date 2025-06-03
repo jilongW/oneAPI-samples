@@ -6,7 +6,6 @@ all: matrix_mul_mkl
 
 run: matrix_mul_mkl
 	./matrix_mul_mkl single
-	./matrix_mul_mkl double
 
 INCLUDE_COMMON=../../../common
 MKL_COPTS = -DMKL_ILP64  -qmkl -qmkl-sycl-impl=blas
