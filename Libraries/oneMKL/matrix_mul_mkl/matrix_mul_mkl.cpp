@@ -41,17 +41,55 @@ bool test(queue &Q, int M, int N, int K)
     constexpr int rd_size = 1048576;
     std::vector<T> host_vector(rd_size);
     auto host_data = host_vector.data();
-
+    std::vector<T> correct_host_vector(rd_size);
+    auto correct_host_data = correct_host_vector.data();
     /* Measure time for a given number of GEMM calls */
-    auto time_gemms = [=, &Q](int runs) -> double {
+    bool verify = false;
+    auto time_gemms = [=, &Q, &host_data](int runs, bool verify=false) -> std::tuple<double, int> {
         using namespace oneapi::mkl;
         using namespace std::chrono;
         auto start = steady_clock::now();
-        for (int i = 0; i < runs; i++)
+        int ok = 0;
+        if (verify == false){
+            for (int i = 0; i < runs; i++)
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+            Q.wait_and_throw();
+            auto end = steady_clock::now();
+            return std::make_tuple(duration<double>(end - start).count(), ok);
+        }
+        else{
+            size_t elems = std::min(ldc * N, rd_size);
+            
             blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
-        Q.wait_and_throw();
-        auto end = steady_clock::now();
-        return duration<double>(end - start).count();
+            Q.wait_and_throw();
+            Q.copy(C, correct_host_data, elems).wait();
+            auto end = steady_clock::now();
+            auto used_time = duration<double>(end - start).count();
+
+            // correct_host_data[0] += 1.0;
+            for (int i = 1; i < runs; i++){
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                Q.wait_and_throw();
+                end = steady_clock::now();
+                used_time += duration<double>(end - start).count();
+                Q.copy(C, host_data, elems).wait();
+                int linear_id = 0;
+                for (size_t j = 0; j < N; j++) {
+                    for (size_t k = 0; k < M; k++) {
+                        linear_id = j*ldc + k;
+                        if (linear_id >= elems) break;
+                        if (host_data[linear_id] != correct_host_data[linear_id]) {
+                            ok = i;
+                            return std::make_tuple(duration<double>(end - start).count(), ok);
+                        }
+                    }
+                    if (linear_id >= elems) break;
+                }
+                
+            }
+            return std::make_tuple(used_time, ok);
+        }
     };
 
     /* Fill A/B with all ones to verify correctness */
@@ -91,13 +129,15 @@ bool test(queue &Q, int M, int N, int K)
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
-    auto tare = time_gemms(1);
+    auto [tare, _] = time_gemms(1, true);
     int ncalls = std::max(4, std::min(1000, int(1. / tare)));
 
     /* Time that many GEMMs, subtracting the first call time to remove host overhead.
      * This gives a better idea of device performance. */
     std::cout << " -> Timing...\n";
-    auto time = time_gemms(ncalls + 1) - tare;
+    auto [time, result] = time_gemms(ncalls + 1, true);
+    time -= tare;
+   
     auto avg = time / ncalls;
 
     /* Calculate and display performance */
@@ -114,8 +154,14 @@ bool test(queue &Q, int M, int N, int K)
         flops *= 1e-3;
         unit = 'P';
     }
-
-    std::cout << "\nAverage performance: " << flops << unit << 'F' << "\n";
+     if (result != 0){
+        std::cout << "gemm FAILS" << " for type: " << type_string<T>() << " on " << result <<" times run!"<< "\n";
+    }
+    else{
+        std::cout << "gemm Passes" << " for type: " << type_string<T>() << "!\n";
+        std::cout << "\nAverage performance: " << flops << unit << 'F' << "\n";
+    }
+    
 
     /* Free data */
     free(C, Q);
