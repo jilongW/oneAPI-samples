@@ -11,7 +11,8 @@ template <typename T> const char *type_string()     { return "unknown type"; }
 template <> const char *type_string<sycl::half>()   { return "half precision"; }
 template <> const char *type_string<float>()        { return "single precision"; }
 template <> const char *type_string<double>()       { return "double precision"; }
-
+template <> const char *type_string<oneapi::mkl::bfloat16>()       { return "bf16 precision"; }
+template <> const char *type_string<std::int8_t>()       { return "int8 precision"; }
 /* Choose inter-column padding for optimal performance */
 template <typename T>
 int nice_ld(int x)

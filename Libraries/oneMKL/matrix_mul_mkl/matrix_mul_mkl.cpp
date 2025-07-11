@@ -170,7 +170,155 @@ bool test(queue &Q, int M, int N, int K)
 
     return true;
 }
+template <>
+bool test<std::int8_t>(queue &Q, int M, int N, int K)
+{
+    std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";;
 
+    std::cout << " -> Initializing data...\n";
+
+    /* Allocate A/B/C matrices */
+    int lda = nice_ld<std::int8_t>(M);
+    int ldb = nice_ld<std::int8_t>(K);
+    int ldc = nice_ld<float>(M);
+
+    auto A = malloc_device<std::int8_t>(lda * K, Q);
+    auto B = malloc_device<std::int8_t>(ldb * N, Q);
+    auto C = malloc_device<float>(ldc * N, Q);
+
+    constexpr int rd_size = 1048576;
+    std::vector<float> host_vector(rd_size);
+    auto host_data = host_vector.data();
+    std::vector<float> correct_host_vector(rd_size);
+    auto correct_host_data = correct_host_vector.data();
+    /* Measure time for a given number of GEMM calls */
+    bool verify = false;
+    auto time_gemms = [=, &Q, &host_data](int runs, bool verify=false) -> std::tuple<double, int> {
+        using namespace oneapi::mkl;
+        using namespace std::chrono;
+        auto start = steady_clock::now();
+        int ok = 0;
+        if (verify == false){
+            for (int i = 0; i < runs; i++)
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+            Q.wait_and_throw();
+            auto end = steady_clock::now();
+            return std::make_tuple(duration<double>(end - start).count(), ok);
+        }
+        else{
+            size_t elems = std::min(ldc * N, rd_size);
+            
+            blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+            Q.wait_and_throw();
+            Q.copy(C, correct_host_data, elems).wait();
+            auto end = steady_clock::now();
+            auto used_time = duration<double>(end - start).count();
+
+            // correct_host_data[0] += 1.0;
+            for (int i = 1; i < runs; i++){
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                Q.wait_and_throw();
+                end = steady_clock::now();
+                used_time += duration<double>(end - start).count();
+                Q.copy(C, host_data, elems).wait();
+                int linear_id = 0;
+                for (size_t j = 0; j < N; j++) {
+                    for (size_t k = 0; k < M; k++) {
+                        linear_id = j*ldc + k;
+                        if (linear_id >= elems) break;
+                        if (host_data[linear_id] != correct_host_data[linear_id]) {
+                            ok = i;
+                            return std::make_tuple(duration<double>(end - start).count(), ok);
+                        }
+                    }
+                    if (linear_id >= elems) break;
+                }
+                
+            }
+            return std::make_tuple(used_time, ok);
+        }
+    };
+    std::vector<std::int8_t> host_zero(rd_size);
+    auto host_zero_data = host_zero.data();
+    /* Fill A/B with all ones to verify correctness */
+    generate_ones(rd_size, host_zero_data);
+    replicate_data(Q, A, lda * K, host_zero_data, rd_size);
+    replicate_data(Q, B, ldb * N, host_zero_data, rd_size);
+
+    /* Verify that the leading entries of C are correct */
+    std::cout << " -> Verification...";
+    (void) time_gemms(1);
+    size_t elems = std::min(ldc * N, rd_size);
+    Q.copy(C, host_data, elems).wait();
+    bool ok = true;
+    int linear_id = 0;
+    for (size_t j = 0; j < N; j++) {
+        for (size_t i = 0; i < M; i++) {
+            linear_id = j*ldc + i;
+            if (linear_id >= elems) break;
+            if (host_data[linear_id] != float(K)) {
+                ok = false;
+            }
+        }
+        if (linear_id >= elems) break;
+    }
+    
+    std::cout << "gemm " << (ok ? " passes." : " FAILS!") << " for type: " << type_string<std::int8_t>() << "\n";
+    if (!ok) { return false; }
+
+    /* Fill A/B with random data */
+    generate_random_data(rd_size, host_zero_data);
+    replicate_data(Q, A, lda * K, host_zero_data, rd_size);
+    replicate_data(Q, B, ldb * N, host_zero_data, rd_size);
+
+    /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
+    std::cout << " -> Warmup...\n";
+    (void) time_gemms(1);
+
+    /* Time one GEMM call, and estimate how many calls will be required to keep the
+     * GPU busy for 1s. */
+    auto [tare, _] = time_gemms(1, true);
+    int ncalls = std::max(4, std::min(1000, int(1. / tare)));
+
+    /* Time that many GEMMs, subtracting the first call time to remove host overhead.
+     * This gives a better idea of device performance. */
+    std::cout << " -> Timing...\n";
+    auto [time, result] = time_gemms(ncalls + 1, true);
+    time -= tare;
+   
+    auto avg = time / ncalls;
+
+    /* Calculate and display performance */
+    auto op_count = double(M) * double(N) * double(K) * 2;
+    auto flops = op_count / avg;
+
+    flops *= 1e-9;
+    char unit = 'G';
+    if (flops >= 1000.) {
+        flops *= 1e-3;
+        unit = 'T';
+    }
+    if (flops >= 1000.) {
+        flops *= 1e-3;
+        unit = 'P';
+    }
+     if (result != 0){
+        std::cout << "gemm FAILS" << " for type: " << type_string<std::int8_t>() << " on " << result <<" times run!"<< "\n";
+    }
+    else{
+        std::cout << "gemm Passes" << " for type: " << type_string<std::int8_t>() << "!\n";
+        std::cout << "\nAverage performance: " << flops << unit << 'F' << "\n";
+    }
+    
+
+    /* Free data */
+    free(C, Q);
+    free(B, Q);
+    free(A, Q);
+
+    return true;
+}
 static
 void usage(const char *pname)
 {
@@ -182,6 +330,7 @@ void usage(const char *pname)
               << "   double    [default]\n"
               << "   single\n"
               << "   half\n"
+              << "   bf16\n"
               << "   all (runs all above)\n"
               << "\n"
               << "This benchmark uses the default DPC++ device, which can be controlled using\n"
@@ -255,6 +404,10 @@ int main(int argc, char **argv)
             g_success = g_success && test<float>(Q, M, N, K);
         else if (type == "half")
             g_success = g_success && test<half>(Q, M, N, K);
+        else if (type == "bf16")
+            g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K);
+        else if (type == "int8")
+            g_success = g_success && test<std::int8_t>(Q, M, N, K);
         else if (type == "all") {
             type = "half";
             g_success = g_success && test<half>(Q, M, N, K);
