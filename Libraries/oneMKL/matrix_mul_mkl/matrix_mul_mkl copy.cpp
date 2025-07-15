@@ -418,7 +418,10 @@ template <>
 bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
 {
     
-    std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";
+    if ( Z == -1)
+        std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";
+    else
+        std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") x (" << N << " x " << Z << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";;
     std::cout << " -> Initializing data...\n";
 
     /* Allocate A/B/C matrices */
@@ -501,7 +504,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
         for (size_t i = 0; i < M; i++) {
             linear_id = j*ldc + i;
             if (linear_id >= elems) break;
-            if (host_data[linear_id] != std::int32_t(K)) {
+            if (host_data[linear_id] != float(K)) {
                 ok = false;
             }
         }
@@ -675,10 +678,6 @@ int main(int argc, char **argv)
         else if ((strcmp(argv[i], "-z") == 0)){
             if (isdigit(argv[i + 1][0])) {
                 Z = std::atoi(argv[i + 1]);
-                if ( Z <= 0){
-                    usage(pname);
-                    exit(-1);
-                }
             } else {
                 usage(pname);
                 exit(-1);
@@ -728,7 +727,7 @@ int main(int argc, char **argv)
             i++;
         }
     }
-    if (M <= 0 || N <= 0 || K <= 0 || R < 1 || D < 1 || (type == "int8" && Z >= 1) || (type == "fp32_vec" && Z >= 1))
+    if (M <= 0 || N <= 0 || K <= 0)
         usage(pname);
     
     bool g_success = true;
