@@ -22,7 +22,7 @@
 
 using namespace sycl;
 
-bool test_gemv(queue &Q, int M, int N, int K)
+bool test_gemv(queue &Q, int M, int N, int K, int R, int D)
 {
     std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << "fp32_vec" << "\n";;
 
@@ -64,7 +64,7 @@ bool test_gemv(queue &Q, int M, int N, int K)
             Q.copy<float>(C, correct_host_data, elems).wait();
             auto end = steady_clock::now();
             auto used_time = duration<double>(end - start).count();
-
+            int calls = int(600. / used_time);
             // correct_host_data[0] += 1.0;
             for (int i = 1; i < runs; i++){
                 start = steady_clock::now();
@@ -78,12 +78,13 @@ bool test_gemv(queue &Q, int M, int N, int K)
                     linear_id = k;
                     if (linear_id >= M) break;
                     if (std::abs(host_data[linear_id] - correct_host_data[linear_id]) > 1e-3) {
-                        // std::cout << linear_id << " "<< host_data[linear_id] << " " << correct_host_data[linear_id] << " " << std::abs(host_data[linear_id] - correct_host_data[linear_id]) << "" << "\n";
                         ok = i;
                         return std::make_tuple(duration<double>(end - start).count(), ok);
                     }
                 }
-                
+                if ( i % calls == 0 ){
+                    std::cout << " gemm has been running for " << (i/calls) *10 <<" minutes, and running " << i << " times\n";
+                }
             }
             return std::make_tuple(used_time, ok);
         }
@@ -128,7 +129,13 @@ bool test_gemv(queue &Q, int M, int N, int K)
      * GPU busy for 1s. */
     auto [tare, _] = time_gemvs(1, true);
     int ncalls = std::max(4, std::min(1000, int(1. / tare)));
-
+    if ( D != 1 ){
+        ncalls = int(1. / tare);
+        ncalls *= D;
+    }
+    else if( R != 1 ){
+        ncalls = R;
+    }
     /* Time that many GEMMs, subtracting the first call time to remove host overhead.
      * This gives a better idea of device performance. */
     std::cout << " -> Timing...\n";
@@ -171,7 +178,7 @@ bool test_gemv(queue &Q, int M, int N, int K)
 
 template <typename T>
 static
-bool test(queue &Q, int M, int N, int K)
+bool test(queue &Q, int M, int N, int K, int R, int D)
 {
     std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<T>() << "\n";;
 
@@ -279,7 +286,13 @@ bool test(queue &Q, int M, int N, int K)
      * GPU busy for 1s. */
     auto [tare, _] = time_gemms(1, true);
     int ncalls = std::max(4, std::min(1000, int(1. / tare)));
-
+    if ( D != 1 ){
+        ncalls = int(1. / tare);
+        ncalls *= D;
+    }
+    else if( R != 1 ){
+        ncalls = R;
+    }
     /* Time that many GEMMs, subtracting the first call time to remove host overhead.
      * This gives a better idea of device performance. */
     std::cout << " -> Timing...\n";
@@ -319,7 +332,7 @@ bool test(queue &Q, int M, int N, int K)
     return true;
 }
 template <>
-bool test<std::int8_t>(queue &Q, int M, int N, int K)
+bool test<std::int8_t>(queue &Q, int M, int N, int K, int R, int D)
 {
     std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";;
 
@@ -428,7 +441,13 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K)
      * GPU busy for 1s. */
     auto [tare, _] = time_gemms(1, true);
     int ncalls = std::max(4, std::min(1000, int(1. / tare)));
-
+    if ( D != 1 ){
+        ncalls = int(1. / tare);
+        ncalls *= D;
+    }
+    else if( R != 1 ){
+        ncalls = R;
+    }
     /* Time that many GEMMs, subtracting the first call time to remove host overhead.
      * This gives a better idea of device performance. */
     std::cout << " -> Timing...\n";
@@ -470,8 +489,9 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K)
 static
 void usage(const char *pname)
 {
-    std::cerr << "Usage:\n"
+    std::cerr << "Simple Usage:\n"
               << "  " << pname << " [type] N           benchmark (NxN) x (NxN) square matrix multiplication (default: N = 4096)\n"
+              << "  " << pname << " [type] M N K       benchmark (MxK) x (KxN) square matrix multiplication\n"
               << "  " << pname << " [type] M N K       benchmark (MxK) x (KxN) square matrix multiplication\n"
               << "\n"
               << "The optional [type] selects the data type:\n"
@@ -480,6 +500,16 @@ void usage(const char *pname)
               << "   half\n"
               << "   bf16\n"
               << "   all (runs all above)\n"
+              << "\n"
+              << "Option Usage:\n"
+              << "  " << pname << " [type] [Options]\n"
+              << "  -m                                  benchmark (MxK) x (KxN) square matrix multiplication (default: M = 4096)\n"
+              << "  -n                                  benchmark (MxK) x (KxN) square matrix multiplication (default: N = 4096)\n"
+              << "  -k                                  benchmark (MxK) x (KxN) square matrix multiplication (default: K = 4096)\n"
+              << "  -c                                  running benchmark on which device (default running on all devices)\n"
+              << "  -r                                  running benchmark multiple times, conflict with -d (default 1)\n"
+              << "  -d                                  Duration of running benchmark, conflict with -r (default 1s)\n"
+              << "                                      can be set to Xs or Xm or Xh, will overwrite -r\n"
               << "\n"
               << "This benchmark uses the default DPC++ device, which can be controlled using\n"
               << "  the ONEAPI_DEVICE_SELECTOR environment variable\n";
@@ -509,6 +539,7 @@ int main(int argc, char **argv)
 {
     auto pname = argv[0];
     int M = 4096, N = 4096, K = 4096;
+    int R = 1, C = -1, D = 1;
     std::string type = "none";
 
     if (argc <= 1)
@@ -519,66 +550,153 @@ int main(int argc, char **argv)
         argc--; argv++;
     }
 
-    if (argc > 1) M = N = K = std::atoi(argv[1]);
+    if (argc == 2) M = N = K = std::atoi(argv[1]);
 
-    if (argc > 3) {
+    if (argc ==4) {
+        M = std::atoi(argv[1]);
         N = std::atoi(argv[2]);
         K = std::atoi(argv[3]);
     }
-
+    for (int i = 1; i< argc;i++){
+        if ((strcmp(argv[i], "-h") == 0) || (strcmp(argv[i], "--help") == 0)) {
+            usage(pname);
+            exit(0);
+        }
+        else if ((strcmp(argv[i], "-m") == 0)){
+            if (isdigit(argv[i + 1][0])) {
+                M = std::atoi(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-n") == 0)){
+            if (isdigit(argv[i + 1][0])) {
+                N = std::atoi(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-k") == 0)){
+            if (isdigit(argv[i + 1][0])) {
+                K = std::atoi(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-r") == 0)){
+            if (isdigit(argv[i + 1][0])) {
+                R = std::atoi(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-c") == 0)){
+            if (isdigit(argv[i + 1][0])) {
+                C = std::atoi(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-d") == 0)){
+            std::string str = argv[i+1];
+            if (str[str.size() - 1] == 'h'){
+                str.pop_back();
+                D = std::atoi(str.c_str()) * 60 * 60;
+            }
+            else if(str[str.size() - 1] == 'm'){
+                str.pop_back();
+                D = std::atoi(str.c_str()) * 60;
+            }
+            else if(str[str.size() - 1] == 's'){
+                str.pop_back();
+                D = std::atoi(str.c_str());
+            }
+            else{
+                usage(pname);
+                exit(-1);
+            }
+            if ( D < 1 ){
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+    }
     if (M <= 0 || N <= 0 || K <= 0)
         usage(pname);
-
+    
     bool g_success = true;
     try { 
-        device D(default_selector_v);
-        device_info(D);
-        auto P = D.get_platform();
+        device d(default_selector_v);
+        device_info(d);
+        auto P = d.get_platform();
         auto RootDevices = P.get_devices();
-        auto C = context(RootDevices);
+        auto c = context(RootDevices);
         int device_id = 0;
-        for (auto &D : RootDevices) {
+        
+        if (C >= int(RootDevices.size()) ){
+            std::cout << "Can't find device " << C <<" , please check your system" << "\n"; 
+            exit(-1);
+        }
+        for (auto &d : RootDevices) {
+            
+            if ( C != -1 ){
+                if( device_id != C){
+                    device_id++;
+                    continue;
+                }
+            }
             std::cout << "Running on device: " << device_id << "\n";
-            queue Q(C, D);
+            queue Q(c, d);
 
             if ("none" == type)
-                std::string type = device_has_fp64(D) ? "double" : "float";
+                std::string type = device_has_fp64(d) ? "double" : "float";
 
             if (type == "double") {
-                if (device_has_fp64(D))
-                    test<double>(Q, M, N, K);
+                if (device_has_fp64(d))
+                    test<double>(Q, M, N, K, R, 1);
                 else {
                     std::cout << "no FP64 capability on given SYCL device and type == \"double\"";
                     return 1;
                 }
             }
             else if (type == "single" || type == "float")
-                g_success = g_success && test<float>(Q, M, N, K);
+                g_success = g_success && test<float>(Q, M, N, K, R, D);
             else if (type == "half")
-                g_success = g_success && test<half>(Q, M, N, K);
+                g_success = g_success && test<half>(Q, M, N, K, R, D);
             else if (type == "fp16")
-                g_success = g_success && test<half>(Q, M, N, K);
+                g_success = g_success && test<half>(Q, M, N, K, R, D);
             else if (type == "fp32_mat" )
-                g_success = g_success && test<float>(Q, M, N, K);
+                g_success = g_success && test<float>(Q, M, N, K, R, D);
             else if (type == "bf16")
-                g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K);
+                g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K, R, D);
             else if (type == "int8")
-                g_success = g_success && test<std::int8_t>(Q, M, N, K);
+                g_success = g_success && test<std::int8_t>(Q, M, N, K, R, D);
             else if (type == "fp32_vec"){
-                g_success = g_success && test_gemv(Q, M, 1, K);
+                g_success = g_success && test_gemv(Q, M, 1, K, R, D);
                 N = 1;
             }
                 
             else if (type == "all") {
                 type = "half";
-                g_success = g_success && test<half>(Q, M, N, K);
+                g_success = g_success && test<half>(Q, M, N, K, R, D);
 
                 type = "float";
-                g_success = g_success && test<float>(Q, M, N, K);
+                g_success = g_success && test<float>(Q, M, N, K, R, D);
 
-                if (device_has_fp64(D)) {
+                if (device_has_fp64(d)) {
                     type = "double";
-                    g_success = g_success && test<double>(Q, M, N, K);
+                    g_success = g_success && test<double>(Q, M, N, K, R, D);
                 }
             } else {
                 type = "none";
@@ -590,15 +708,15 @@ int main(int argc, char **argv)
         
     }
     catch (sycl::exception const& e) {
-            std::cerr << "SYCL exception: " << e.what() << "\n";
-            std::cerr << " while performing GEMM for" 
-                << " M=" << M 
-                << ", N=" << N
-                << ", K=" << K
-                << ", type `" << type << "`"
-                << "\n";
-            return 139;
-        }
+        std::cerr << "SYCL exception: " << e.what() << "\n";
+        std::cerr << " while performing GEMM for" 
+            << " M=" << M 
+            << ", N=" << N
+            << ", K=" << K
+            << ", type `" << type << "`"
+            << "\n";
+        return 139;
+    }
     return g_success ? 0 : 1;
 }
 
