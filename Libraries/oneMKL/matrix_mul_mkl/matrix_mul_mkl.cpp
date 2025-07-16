@@ -12,6 +12,7 @@
 #include <sycl/sycl.hpp>
 #include <oneapi/mkl.hpp>
 #include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -54,7 +55,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
                 blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
             Q.wait_and_throw();
             auto end = steady_clock::now();
-            return std::make_tuple(duration<double>(end - start).count(), ok);
+            return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
             size_t elems = std::min(ldc * N, rd_size);
@@ -63,7 +64,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
             Q.wait_and_throw();
             Q.copy<float>(C, correct_host_data, elems).wait();
             auto end = steady_clock::now();
-            auto used_time = duration<double>(end - start).count();
+            auto used_time = duration<float>(end - start).count();
             int calls = int(600. / used_time);
             // correct_host_data[0] += 1.0;
             for (int i = 1; i < runs; i++){
@@ -71,7 +72,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
                 blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
                 Q.wait_and_throw();
                 end = steady_clock::now();
-                used_time += duration<double>(end - start).count();
+                used_time += duration<float>(end - start).count();
                 Q.copy<float>(C, host_data, elems).wait();
                 int linear_id = 0;
                 for (size_t k = 0; k < M; k++) {
@@ -79,7 +80,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
                     if (linear_id >= M) break;
                     if (std::abs(host_data[linear_id] - correct_host_data[linear_id]) > 1e-3) {
                         ok = i;
-                        return std::make_tuple(duration<double>(end - start).count(), ok);
+                        return std::make_tuple(duration<float>(end - start).count(), ok);
                     }
                 }
                 if ( i % calls == 0 ){
@@ -228,7 +229,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
             }
             Q.wait_and_throw();
             auto end = steady_clock::now();
-            return std::make_tuple(duration<double>(end - start).count(), ok);
+            return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
             size_t elems;
@@ -247,7 +248,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                 Q.copy(F, correct_host_data, elems).wait();
             }
             auto end = steady_clock::now();
-            auto used_time = duration<double>(end - start).count();
+            auto used_time = duration<float>(end - start).count();
 
             // correct_host_data[0] += 1.0;
             if ( Z == -1){
@@ -256,7 +257,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                     blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
                     Q.wait_and_throw();
                     end = steady_clock::now();
-                    used_time += duration<double>(end - start).count();
+                    used_time += duration<float>(end - start).count();
                     Q.copy(C, host_data, elems).wait();
                     int linear_id = 0;
                     for (size_t j = 0; j < N; j++) {
@@ -265,7 +266,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                             if (linear_id >= elems) break;
                             if (host_data[linear_id] != correct_host_data[linear_id]) {
                                 ok = i;
-                                return std::make_tuple(duration<double>(end - start).count(), ok);
+                                return std::make_tuple(duration<float>(end - start).count(), ok);
                             }
                         }
                         if (linear_id >= elems) break;
@@ -281,7 +282,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                     blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc, E, lde, 0, F, ldf);
                     Q.wait_and_throw();
                     end = steady_clock::now();
-                    used_time += duration<double>(end - start).count();
+                    used_time += duration<float>(end - start).count();
                     Q.copy(F, host_data, elems).wait();
                     int linear_id = 0;
                     for (size_t j = 0; j < Z; j++) {
@@ -290,7 +291,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                             if (linear_id >= elems) break;
                             if (host_data[linear_id] != correct_host_data[linear_id]) {
                                 ok = i;
-                                return std::make_tuple(duration<double>(end - start).count(), ok);
+                                return std::make_tuple(duration<float>(end - start).count(), ok);
                             }
                         }
                         if (linear_id >= elems) break;
@@ -418,19 +419,26 @@ template <>
 bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
 {
     
-    std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";
+    if ( Z == -1)
+        std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";
+    else
+        std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") x (" << N << " x " << Z << ") matrix multiplication, " << type_string<std::int8_t>() << "\n";;
     std::cout << " -> Initializing data...\n";
 
     /* Allocate A/B/C matrices */
     int lda = nice_ld<std::int8_t>(M);
     int ldb = nice_ld<std::int8_t>(K);
     int ldc = nice_ld<std::int32_t>(M);
+    int lde = nice_ld<std::int32_t>(N);
+    int ldf = nice_ld<std::int32_t>(M);
 
     auto A = malloc_device<std::int8_t>(lda * K, Q);
     auto B = malloc_device<std::int8_t>(ldb * N, Q);
     auto C = malloc_device<std::int32_t>(ldc * N, Q);
+    auto E = malloc_device<std::int32_t>(lde * Z, Q);   
+    auto F = malloc_device<std::int32_t>(ldf * Z, Q);
 
-    int rd_size = lda * K + ldb * N + lda * N + 1;
+    int rd_size = lda * K + ldb * N + lda * N + lde * Z + lda * Z + 1;
     std::vector<std::int32_t> host_vector(rd_size);
     auto host_data = host_vector.data();
     std::vector<std::int32_t> correct_host_vector(rd_size);
@@ -443,42 +451,89 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
         auto start = steady_clock::now();
         int ok = 0;
         if (verify == false){
-            for (int i = 0; i < runs; i++)
-                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+            if ( Z == -1){
+                for (int i = 0; i < runs; i++)
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+            }
+            else{
+                for (int i = 0; i < runs; i++){
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, (float *)C, ldc);
+                    Q.wait_and_throw();
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                }
+                    
+            }
             Q.wait_and_throw();
             auto end = steady_clock::now();
-            return std::make_tuple(duration<double>(end - start).count(), ok);
+            return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
-            size_t elems = std::min(ldc * N, rd_size);
-            
-            blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
-            Q.wait_and_throw();
-            Q.copy(C, correct_host_data, elems).wait();
-            auto end = steady_clock::now();
-            auto used_time = duration<double>(end - start).count();
-
-            // correct_host_data[0] += 1.0;
-            for (int i = 1; i < runs; i++){
-                start = steady_clock::now();
+            size_t elems;
+            if ( Z == -1){
+                elems = std::min(ldc * N, rd_size);
                 blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
                 Q.wait_and_throw();
-                end = steady_clock::now();
-                used_time += duration<double>(end - start).count();
-                Q.copy(C, host_data, elems).wait();
-                int linear_id = 0;
-                for (size_t j = 0; j < N; j++) {
-                    for (size_t k = 0; k < M; k++) {
-                        linear_id = j*ldc + k;
-                        if (linear_id >= elems) break;
-                        if (host_data[linear_id] != correct_host_data[linear_id]) {
-                            ok = i;
-                            return std::make_tuple(duration<double>(end - start).count(), ok);
+                Q.copy(C, correct_host_data, elems).wait();
+            }
+            else{
+                elems = std::min(ldf * Z, rd_size);
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                Q.wait_and_throw();
+                blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                Q.wait_and_throw();
+                Q.copy(F, correct_host_data, elems).wait();
+            }
+            auto end = steady_clock::now();
+            auto used_time = duration<float>(end - start).count();
+
+            // correct_host_data[0] += 1.0;
+            if ( Z == -1){
+                for (int i = 1; i < runs; i++){
+                    start = steady_clock::now();
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    Q.wait_and_throw();
+                    end = steady_clock::now();
+                    used_time += duration<float>(end - start).count();
+                    Q.copy(C, host_data, elems).wait();
+                    int linear_id = 0;
+                    for (size_t j = 0; j < N; j++) {
+                        for (size_t k = 0; k < M; k++) {
+                            linear_id = j*ldc + k;
+                            if (linear_id >= elems) break;
+                            if (host_data[linear_id] != correct_host_data[linear_id]) {
+                                ok = i;
+                                return std::make_tuple(duration<float>(end - start).count(), ok);
+                            }
                         }
+                        if (linear_id >= elems) break;
                     }
-                    if (linear_id >= elems) break;
+                    
                 }
-                
+            }
+            else{
+                for (int i = 1; i < runs; i++){
+                    start = steady_clock::now();
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    Q.wait_and_throw();
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                    Q.wait_and_throw();
+                    end = steady_clock::now();
+                    used_time += duration<float>(end - start).count();
+                    Q.copy(F, host_data, elems).wait();
+                    int linear_id = 0;
+                    for (size_t j = 0; j < Z; j++) {
+                        for (size_t k = 0; k < M; k++) {
+                            linear_id = j*ldf + k;
+                            if (linear_id >= elems) break;
+                            if (host_data[linear_id] != correct_host_data[linear_id]) {
+                                ok = i;
+                                return std::make_tuple(duration<float>(end - start).count(), ok);
+                            }
+                        }
+                        if (linear_id >= elems) break;
+                    }
+                    
+                }
             }
             return std::make_tuple(used_time, ok);
         }
@@ -487,34 +542,64 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
     auto host_zero_data = host_zero.data();
     /* Fill A/B with all ones to verify correctness */
     generate_ones(rd_size, host_zero_data);
+    if ( Z != -1)
+        generate_ones(rd_size, host_data);
     replicate_data(Q, A, lda * K, host_zero_data, rd_size);
     replicate_data(Q, B, ldb * N, host_zero_data, rd_size);
-
+    if ( Z != -1){
+        replicate_data(Q, E, lde * Z, host_data, rd_size);
+    }
     /* Verify that the leading entries of C are correct */
     std::cout << " -> Verification...";
     (void) time_gemms(1);
     size_t elems = std::min(ldc * N, rd_size);
-    Q.copy(C, host_data, elems).wait();
-    bool ok = true;
-    int linear_id = 0;
-    for (size_t j = 0; j < N; j++) {
-        for (size_t i = 0; i < M; i++) {
-            linear_id = j*ldc + i;
-            if (linear_id >= elems) break;
-            if (host_data[linear_id] != std::int32_t(K)) {
-                ok = false;
+    bool ok;
+    if ( Z == -1){
+        size_t elems = std::min(ldc * N, rd_size);
+        Q.copy(C, host_data, elems).wait();
+        ok = true;
+        int linear_id = 0;
+        for (size_t j = 0; j < N; j++) {
+            for (size_t i = 0; i < M; i++) {
+                linear_id = j*ldc + i;
+                if (linear_id >= elems) break;
+                if (host_data[linear_id] != int32_t(K)) {
+                    ok = false;
+                    return 0;
+                }
             }
+            if (linear_id >= elems) break;
         }
-        if (linear_id >= elems) break;
     }
-    
+    else{
+        size_t elems = std::min(ldf * Z, rd_size);
+        Q.copy(F, host_data, elems).wait();
+        ok = true;
+        int linear_id = 0;
+        for (size_t j = 0; j < Z; j++) {
+            for (size_t i = 0; i < M; i++) {
+                linear_id = j*ldf + i;
+                if (linear_id >= elems) break;
+                if (host_data[linear_id] != int32_t(K) * N) {
+                    ok = false;
+                    return 0;
+                }
+            }
+            if (linear_id >= elems) break;
+        }
+    }
     std::cout << "gemm " << (ok ? " passes." : " FAILS!") << " for type: " << type_string<std::int8_t>() << "\n";
     if (!ok) { return false; }
 
     /* Fill A/B with random data */
     generate_random_data(rd_size, host_zero_data);
+    if ( Z != -1)
+        generate_random_data(rd_size, host_data);
     replicate_data(Q, A, lda * K, host_zero_data, rd_size);
     replicate_data(Q, B, ldb * N, host_zero_data, rd_size);
+    if ( Z != -1){
+        replicate_data(Q, E, lde * Z, host_data, rd_size);
+    }
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
@@ -563,6 +648,8 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
     
 
     /* Free data */
+    free(F, Q);
+    free(E, Q);
     free(C, Q);
     free(B, Q);
     free(A, Q);
@@ -630,6 +717,11 @@ int main(int argc, char **argv)
 
     if (argc > 1 && std::isalpha(argv[1][0])) {
         type = argv[1];
+        if (type == "int8" || type == "bf16"){
+            N *= 2;
+            M *= 2;
+            K *= 2;
+        }
         argc--; argv++;
     }
 
@@ -728,13 +820,13 @@ int main(int argc, char **argv)
             i++;
         }
     }
-    if (M <= 0 || N <= 0 || K <= 0 || R < 1 || D < 1 || (type == "int8" && Z >= 1) || (type == "fp32_vec" && Z >= 1))
+    if (M <= 0 || N <= 0 || K <= 0 || R < 1 || D < 1 || (type == "fp32_vec" && Z >= 1))
         usage(pname);
     
     bool g_success = true;
     try { 
         device d(default_selector_v);
-        device_info(d);
+       
         auto P = d.get_platform();
         auto RootDevices = P.get_devices();
         auto c = context(RootDevices);
@@ -745,7 +837,7 @@ int main(int argc, char **argv)
             exit(-1);
         }
         for (auto &d : RootDevices) {
-            
+            device_info(d);
             if ( C != -1 ){
                 if( device_id != C){
                     device_id++;
@@ -800,6 +892,7 @@ int main(int argc, char **argv)
             }
             device_id++;
             std::cout << "\n";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
         } 
         
     }
