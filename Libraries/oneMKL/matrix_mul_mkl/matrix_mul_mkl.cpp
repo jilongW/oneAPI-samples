@@ -124,7 +124,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
-    (void) time_gemvs(1);
+    (void) time_gemvs(10);
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
@@ -325,7 +325,6 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                 if (linear_id >= elems) break;
                 if (host_data[linear_id] != T(K)) {
                     ok = false;
-                    return 0;
                 }
             }
             if (linear_id >= elems) break;
@@ -342,7 +341,6 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                 if (linear_id >= elems) break;
                 if (host_data[linear_id] != T(K) * N) {
                     ok = false;
-                    return 0;
                 }
             }
             if (linear_id >= elems) break;
@@ -362,7 +360,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
-    (void) time_gemms(1);
+    (void) time_gemms(10);
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
@@ -565,7 +563,6 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
                 if (linear_id >= elems) break;
                 if (host_data[linear_id] != int32_t(K)) {
                     ok = false;
-                    return 0;
                 }
             }
             if (linear_id >= elems) break;
@@ -582,7 +579,6 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
                 if (linear_id >= elems) break;
                 if (host_data[linear_id] != int32_t(K) * N) {
                     ok = false;
-                    return 0;
                 }
             }
             if (linear_id >= elems) break;
@@ -603,7 +599,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
-    (void) time_gemms(1);
+    (void) time_gemms(10);
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
@@ -660,15 +656,24 @@ static
 void usage(const char *pname)
 {
     std::cerr << "Simple Usage:\n"
-              << "  " << pname << " [type] N           benchmark (NxN) x (NxN) square matrix multiplication (default: N = 4096)\n"
-              << "  " << pname << " [type] M N K       benchmark (MxK) x (KxN) square matrix multiplication\n"
-              << "  " << pname << " [type] M N K       benchmark (MxK) x (KxN) square matrix multiplication\n"
+              << "  " << pname << " [type] N                                    benchmark (NxN) x (NxN) square matrix multiplication (default: N = 4096)\n"
+              << "  " << pname << " [type] M N K                                benchmark (MxK) x (KxN) square matrix multiplication\n"
+              << "  " << pname << " [type] M N K                                benchmark (MxK) x (KxN) square matrix multiplication\n"
+              << "  " << pname << " [type] -m 4096 -n 4096 -k 4096 -z 4096      benchmark (MxK) x (KxN) x (NxZ) square matrix multiplication\n"
+              << "  " << pname << " [type] -m 4096 -n 4096 -k 4096 -c 0         benchmark (MxK) x (KxN) square matrix multiplication on device 0\n"
+              << "  " << pname << " [type] -m 4096 -n 4096 -k 4096 -r 10        benchmark 10 times (MxK) x (KxN) square matrix multiplication \n"
+              << "  " << pname << " [type] -m 4096 -n 4096 -k 4096 -d 10m       benchmark (MxK) x (KxN) square matrix multiplication for 10 mins\n"
               << "\n"
               << "The optional [type] selects the data type:\n"
               << "   double    [default]\n"
+              << "   fp64\n"
               << "   single\n"
+              << "   fp32 (or fp32_mat)\n"
               << "   half\n"
+              << "   fp16\n"
               << "   bf16\n"
+              << "   int8\n"
+              << "   fp32_vec (gemv instead of gemm)\n"
               << "   all (runs all above)\n"
               << "\n"
               << "Option Usage:\n"
@@ -676,6 +681,8 @@ void usage(const char *pname)
               << "  -m                                  benchmark (MxK) x (KxN) square matrix multiplication (default: M = 4096)\n"
               << "  -n                                  benchmark (MxK) x (KxN) square matrix multiplication (default: N = 4096)\n"
               << "  -k                                  benchmark (MxK) x (KxN) square matrix multiplication (default: K = 4096)\n"
+              << "  -z                                  benchmark (MxK) x (KxN) x (NxZ) square matrix multiplication (default: not use)\n"
+              << "                                      fp32_vec can't use this args\n"
               << "  -c                                  running benchmark on which device (default running on all devices)\n"
               << "  -r                                  running benchmark multiple times, conflict with -d (default 1)\n"
               << "  -d                                  Duration of running benchmark, conflict with -r (default 1s)\n"
@@ -892,7 +899,7 @@ int main(int argc, char **argv)
             }
             device_id++;
             std::cout << "\n";
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         } 
         
     }
