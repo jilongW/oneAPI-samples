@@ -147,6 +147,9 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Calculate and display performance */
     auto op_count = double(M) * double(N) * double(K) * 2;
+    if (Z != -1){
+        op_count += (double(M) * double(N) * double(Z) * 2);
+    }
     auto flops = op_count / avg;
 
     flops *= 1e-9;
@@ -383,8 +386,10 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Calculate and display performance */
     auto op_count = double(M) * double(N) * double(K) * 2;
+    if (Z != -1){
+        op_count += (double(M) * double(N) * double(Z) * 2);
+    }
     auto flops = op_count / avg;
-
     flops *= 1e-9;
     char unit = 'G';
     if (flops >= 1000.) {
@@ -622,6 +627,9 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Calculate and display performance */
     auto op_count = double(M) * double(N) * double(K) * 2;
+    if (Z != -1){
+        op_count += (double(M) * double(N) * double(Z) * 2);
+    }
     auto flops = op_count / avg;
 
     flops *= 1e-9;
