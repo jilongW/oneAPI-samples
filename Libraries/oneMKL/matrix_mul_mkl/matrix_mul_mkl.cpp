@@ -54,7 +54,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, 
         int ok = 0;
         if (verify == false){
             for (int i = 0; i < runs; i++)
-                blas::column_major::gemv(Q, transpose::nontrans, M, K, ALPHA, A, lda, B, N, BETA, C, N);
+                blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
             Q.wait_and_throw();
             auto end = steady_clock::now();
             return std::make_tuple(duration<float>(end - start).count(), ok);
@@ -237,7 +237,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float
         if (verify == false){
             if ( Z == -1){
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
                     Q.wait_and_throw();
                 }
                     
@@ -245,9 +245,9 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float
             }
             else{
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, C, ldc, E, lde, DELTA, F, ldf);
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc, E, lde, 0, F, ldf);
                     Q.wait_and_throw();
                 }                  
             }
@@ -429,7 +429,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
-    (void) time_gemms(10);
+    (void) time_gemms(1);
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
@@ -454,8 +454,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float
     if (Z != -1){
         op_count += (double(M) * double(N) * double(Z) * 2);
     }
-    std::cout << op_count << " " << tare << " "<< ncalls << " "<< time << "\n";
-    auto flops = op_count / avg;
+    auto flops = op_count * ncalls / time;
     flops *= 1e-9;
     char unit = 'G';
     if (flops >= 1000.) {
@@ -506,6 +505,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
     auto A = malloc_device<std::int8_t>(lda * K, Q);
     auto B = malloc_device<std::int8_t>(ldb * N, Q);
     auto C = malloc_device<std::int32_t>(ldc * N, Q);
+    
     auto E = malloc_device<std::int32_t>(lde * Z, Q);   
     auto F = malloc_device<std::int32_t>(ldf * Z, Q);
     auto TC = malloc_device<std::int32_t>(ldc * N, Q);
@@ -527,18 +527,17 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
         if (verify == false){
             if ( Z == -1){
                 for (int i = 0; i < runs; i++)
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
             }
             else{
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, (float *)C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, (float *)C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, (float *)C, ldc, (float *)E, lde, DELTA, (float *)F, ldf);
-                }
-                    
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc , (float *)E, lde, 0, (float *)F, ldf);
+                    Q.wait_and_throw();
+                }       
             }
-            Q.wait_and_throw();
-            auto end = steady_clock::now();
+            end = steady_clock::now();
             return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
@@ -693,7 +692,9 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
                 linear_id = j*ldf + i;
                 if (linear_id >= elems) break;
                 if (host_data[linear_id] != int32_t(K) * N) {
+                    std::cout << int32_t(host_data[linear_id]) << " " <<int32_t(K) * int32_t(N) << " " << float(host_data[linear_id]) << " " << float(K) * N<<"\n";
                     ok = false;
+                    exit(-1);
                 }
             }
             if (linear_id >= elems) break;
@@ -714,7 +715,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
     std::cout << " -> Warmup...\n";
-    (void) time_gemms(10);
+    (void) time_gemms(1);
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
@@ -850,10 +851,10 @@ int main(int argc, char **argv)
 
     if (argc > 1 && std::isalpha(argv[1][0])) {
         type = argv[1];
-        if (type == "int8"){
-            N *= 2;
-            M *= 2;
-            K *= 2;
+        if (type == "int8" || type == "bf16"){
+            N *= 4;
+            M *= 4;
+            K *= 4;
         }
         argc--; argv++;
     }
