@@ -23,7 +23,7 @@
 
 using namespace sycl;
 
-bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
+bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float BETA, float GAMMA, float DELTA)
 {
     std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << "fp32_vec" << "\n";;
 
@@ -37,8 +37,9 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
     auto A = malloc_device<float>(lda * K, Q);
     auto B = malloc_device<float>(ldb * N, Q);
     auto C = malloc_device<float>(ldc * N, Q);
+    auto TC = malloc_device<float>(ldc * N, Q);
 
-    constexpr int rd_size = 1048576;
+    int rd_size = lda * K + ldb * N + 2 * lda * N + 1;
     std::vector<float> host_vector(rd_size);
     auto host_data = host_vector.data();
     std::vector<float> correct_host_vector(rd_size);
@@ -49,31 +50,44 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
         using namespace oneapi::mkl;
         using namespace std::chrono;
         auto start = steady_clock::now();
+        auto end = steady_clock::now();
         int ok = 0;
         if (verify == false){
             for (int i = 0; i < runs; i++)
-                blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
+                blas::column_major::gemv(Q, transpose::nontrans, M, K, ALPHA, A, lda, B, N, BETA, C, N);
             Q.wait_and_throw();
             auto end = steady_clock::now();
             return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
             size_t elems = std::min(ldc * N, rd_size);
-            
-            blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
+            if ( BETA != 0.0 ){
+                blas::copy(Q, ldc * N, (float *)C, 1, (float *)TC, 1);
+                Q.wait_and_throw();
+            }
+            start = steady_clock::now();
+            blas::column_major::gemv(Q, transpose::nontrans, M, K, ALPHA, A, lda, B, N, BETA, C, N);
             Q.wait_and_throw();
+            end = steady_clock::now();
+            if ( BETA != 0.0 ){
+                blas::copy(Q, ldc * N, (float *)TC, 1, (float *)C, 1);
+                Q.wait_and_throw();
+            }
             Q.copy<float>(C, correct_host_data, elems).wait();
-            auto end = steady_clock::now();
             auto used_time = duration<float>(end - start).count();
             int calls = int(600. / used_time);
             // correct_host_data[0] += 1.0;
             for (int i = 1; i < runs; i++){
                 start = steady_clock::now();
-                blas::column_major::gemv(Q, transpose::nontrans, M, K, 1, A, lda, B, N, 0, C, N);
+                blas::column_major::gemv(Q, transpose::nontrans, M, K, ALPHA, A, lda, B, N, BETA, C, N);
                 Q.wait_and_throw();
                 end = steady_clock::now();
                 used_time += duration<float>(end - start).count();
                 Q.copy<float>(C, host_data, elems).wait();
+                if ( BETA != 0.0 ){
+                    blas::copy(Q, ldc * N, (float *)TC, 1, (float *)C, 1);
+                    Q.wait_and_throw();
+                }
                 int linear_id = 0;
                 for (size_t k = 0; k < M; k++) {
                     linear_id = k;
@@ -172,6 +186,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
     
 
     /* Free data */
+    free(TC, Q);
     free(C, Q);
     free(B, Q);
     free(A, Q);
@@ -182,7 +197,7 @@ bool test_gemv(queue &Q, int M, int N, int K, int Z, int R, int D)
 
 template <typename T>
 static
-bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
+bool test(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float BETA, float GAMMA, float DELTA)
 {
     if ( Z == -1)
         std::cout << "\nBenchmarking (" << M << " x " << K << ") x (" << K << " x " << N << ") matrix multiplication, " << type_string<T>() << "\n";
@@ -196,15 +211,16 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
     int ldc = nice_ld<T>(M);
     int lde = nice_ld<T>(N);
     int ldf = nice_ld<T>(M);
-    
 
     auto A = malloc_device<T>(lda * K, Q);
     auto B = malloc_device<T>(ldb * N, Q);
     auto C = malloc_device<T>(ldc * N, Q);
     auto E = malloc_device<T>(lde * Z, Q);   
     auto F = malloc_device<T>(ldf * Z, Q);
+    auto TC = malloc_device<T>(ldc * N, Q);
+    auto TF = malloc_device<T>(ldf * Z, Q);
         
-    int rd_size = lda * K + ldb * N + lda * N + lde * Z + lda * Z + 1;
+    int rd_size = lda * K + ldb * N + 2 * lda * N + lde * Z + 2 * ldf * Z + 1;
     std::vector<T> host_vector(rd_size);
     auto host_data = host_vector.data();
     std::vector<T> correct_host_vector(rd_size);
@@ -216,52 +232,84 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
         using namespace oneapi::mkl;
         using namespace std::chrono;
         auto start = steady_clock::now();
+        auto end = steady_clock::now();
         int ok = 0;
         if (verify == false){
             if ( Z == -1){
-                for (int i = 0; i < runs; i++)
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                for (int i = 0; i < runs; i++){
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
+                    Q.wait_and_throw();
+                }
+                    
+                
             }
             else{
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc, E, lde, 0, F, ldf);
-                }
-                    
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, C, ldc, E, lde, DELTA, F, ldf);
+                    Q.wait_and_throw();
+                }                  
             }
-            Q.wait_and_throw();
-            auto end = steady_clock::now();
+            end = steady_clock::now();
             return std::make_tuple(duration<float>(end - start).count(), ok);
         }
         else{
             size_t elems;
+            if ( BETA != 0.0 ){
+                blas::copy(Q, ldc * N * sizeof(T) / sizeof(float), (float *)C, 1, (float *)TC, 1);
+                Q.wait_and_throw();
+            }
             if ( Z == -1){
                 elems = std::min(ldc * N, rd_size);
-                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                 Q.wait_and_throw();
+                end = steady_clock::now();
                 Q.copy(C, correct_host_data, elems).wait();
+                if ( BETA != 0.0 ){
+                    blas::copy(Q, ldc * N * sizeof(T) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                    Q.wait_and_throw();
+                }
             }
             else{
+                if ( DELTA != 0.0){
+                    blas::copy(Q, ldf * Z * sizeof(T) / sizeof(float), (float *)F, 1, (float *)TF, 1);
+                    Q.wait_and_throw();
+                }
                 elems = std::min(ldf * Z, rd_size);
-                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                 Q.wait_and_throw();
-                blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc, E, lde, 0, F, ldf);
+                blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, C, ldc, E, lde, DELTA, F, ldf);
                 Q.wait_and_throw();
+                end = steady_clock::now();
                 Q.copy(F, correct_host_data, elems).wait();
+                if ( BETA != 0.0 ){
+                    blas::copy(Q, ldc * N * sizeof(T) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                    Q.wait_and_throw();
+                }
+                if ( DELTA != 0.0 ){
+                    blas::copy(Q, ldf * Z * sizeof(T) / sizeof(float), (float *)TF, 1, (float *)F, 1);
+                    Q.wait_and_throw();
+                }
             }
-            auto end = steady_clock::now();
+            
             auto used_time = duration<float>(end - start).count();
-
+            int calls = int(600. / used_time);
             // correct_host_data[0] += 1.0;
             if ( Z == -1){
                 for (int i = 1; i < runs; i++){
                     start = steady_clock::now();
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                     Q.wait_and_throw();
                     end = steady_clock::now();
                     used_time += duration<float>(end - start).count();
                     Q.copy(C, host_data, elems).wait();
+                    if ( BETA != 0.0 ){
+                        blas::copy(Q, ldc * N * sizeof(T) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                        Q.wait_and_throw();
+                    }
                     int linear_id = 0;
                     for (size_t j = 0; j < N; j++) {
                         for (size_t k = 0; k < M; k++) {
@@ -273,20 +321,30 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                             }
                         }
                         if (linear_id >= elems) break;
+                    } 
+                    if ( i % calls == 0 ){
+                        std::cout << " gemm has been running for " << (i/calls) *10 <<" minutes, and running " << i << " times\n";
                     }
-                    
                 }
             }
             else{
                 for (int i = 1; i < runs; i++){
                     start = steady_clock::now();
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc, E, lde, 0, F, ldf);
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, C, ldc, E, lde, DELTA, F, ldf);
                     Q.wait_and_throw();
                     end = steady_clock::now();
                     used_time += duration<float>(end - start).count();
                     Q.copy(F, host_data, elems).wait();
+                    if ( BETA != 0.0 ){
+                        blas::copy(Q, ldc * N * sizeof(T) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                        Q.wait_and_throw();
+                    }
+                    if ( DELTA != 0.0 ){
+                        blas::copy(Q, ldf * Z * sizeof(T) / sizeof(float), (float *)TF, 1, (float *)F, 1);
+                        Q.wait_and_throw();
+                    }
                     int linear_id = 0;
                     for (size_t j = 0; j < Z; j++) {
                         for (size_t k = 0; k < M; k++) {
@@ -299,7 +357,9 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
                         }
                         if (linear_id >= elems) break;
                     }
-                    
+                    if ( i % calls == 0 ){
+                        std::cout << " gemm has been running for " << (i/calls) *10 <<" minutes, and running " << i << " times\n";
+                    }
                 }
             }
             return std::make_tuple(used_time, ok);
@@ -357,8 +417,14 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
     generate_random_data(rd_size, host_data);
     replicate_data(Q, A, lda * K, host_data, rd_size);
     replicate_data(Q, B, ldb * N, host_data, rd_size);
+    if (BETA != 0.0 ){
+        replicate_data(Q, C, ldc * N, host_data, rd_size);
+    }
     if ( Z != -1){
         replicate_data(Q, E, lde * Z, host_data, rd_size);
+        if ( DELTA != 0.0 ){
+            replicate_data(Q, F, ldf * Z, host_data, rd_size);
+        }
     }
 
     /* Do a warmup call with random data to initialize MKL and ensure kernels are JIT'ed if needed */
@@ -367,7 +433,8 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
 
     /* Time one GEMM call, and estimate how many calls will be required to keep the
      * GPU busy for 1s. */
-    auto [tare, _] = time_gemms(1, true);
+    auto [tare, _] = time_gemms(10, true);
+    tare /= 10;
     int ncalls = std::max(4, std::min(1000, int(1. / tare)));
     if ( D != 1 ){
         ncalls = int(1. / tare);
@@ -381,14 +448,13 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
     std::cout << " -> Timing...\n";
     auto [time, result] = time_gemms(ncalls + 1, true);
     time -= tare;
-   
     auto avg = time / ncalls;
-
     /* Calculate and display performance */
     auto op_count = double(M) * double(N) * double(K) * 2;
     if (Z != -1){
         op_count += (double(M) * double(N) * double(Z) * 2);
     }
+    std::cout << op_count << " " << tare << " "<< ncalls << " "<< time << "\n";
     auto flops = op_count / avg;
     flops *= 1e-9;
     char unit = 'G';
@@ -410,6 +476,8 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
     
 
     /* Free data */
+    free(TF, Q);
+    free(TC, Q);
     free(F, Q);
     free(E, Q);
     free(C, Q);
@@ -419,7 +487,7 @@ bool test(queue &Q, int M, int N, int K, int Z, int R, int D)
     return true;
 }
 template <>
-bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
+bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float ALPHA, float BETA, float GAMMA, float DELTA)
 {
     
     if ( Z == -1)
@@ -440,8 +508,10 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
     auto C = malloc_device<std::int32_t>(ldc * N, Q);
     auto E = malloc_device<std::int32_t>(lde * Z, Q);   
     auto F = malloc_device<std::int32_t>(ldf * Z, Q);
+    auto TC = malloc_device<std::int32_t>(ldc * N, Q);
+    auto TF = malloc_device<std::int32_t>(ldf * Z, Q);
 
-    int rd_size = lda * K + ldb * N + lda * N + lde * Z + lda * Z + 1;
+    int rd_size = lda * K + ldb * N + 2 * lda * N + lde * Z + 2 * ldf * Z + 1;
     std::vector<std::int32_t> host_vector(rd_size);
     auto host_data = host_vector.data();
     std::vector<std::int32_t> correct_host_vector(rd_size);
@@ -452,17 +522,18 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
         using namespace oneapi::mkl;
         using namespace std::chrono;
         auto start = steady_clock::now();
+        auto end = steady_clock::now();
         int ok = 0;
         if (verify == false){
             if ( Z == -1){
                 for (int i = 0; i < runs; i++)
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
             }
             else{
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, (float *)C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, (float *)C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, (float *)C, ldc, (float *)E, lde, DELTA, (float *)F, ldf);
                 }
                     
             }
@@ -472,32 +543,59 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
         }
         else{
             size_t elems;
+            if ( BETA != 0.0 ){
+                blas::copy(Q, ldc * N * sizeof(std::int8_t) / sizeof(float), (float *)C, 1, (float *)TC, 1);
+                Q.wait_and_throw();
+            }
             if ( Z == -1){
                 elems = std::min(ldc * N, rd_size);
-                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                 Q.wait_and_throw();
+                end = steady_clock::now();
                 Q.copy(C, correct_host_data, elems).wait();
+                if ( BETA != 0.0 ){
+                    blas::copy(Q, ldc * N * sizeof(std::int8_t) / sizeof(float) , (float *)TC, 1, (float *)C, 1);
+                    Q.wait_and_throw();
+                }
             }
             else{
+                if ( DELTA != 0.0){
+                    blas::copy(Q, ldf * Z, (float *)F, 1, (float *)TF, 1);
+                    Q.wait_and_throw();
+                }
                 elems = std::min(ldf * Z, rd_size);
-                blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                start = steady_clock::now();
+                blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                 Q.wait_and_throw();
-                blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, (float *)C, ldc, (float *)E, lde, BETA, (float *)F, ldf);
                 Q.wait_and_throw();
+                end = steady_clock::now();
                 Q.copy(F, correct_host_data, elems).wait();
+                if ( BETA != 0.0 ){
+                    blas::copy(Q, ldc * N * sizeof(std::int8_t) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                    Q.wait_and_throw();
+                }
+                if ( DELTA != 0.0 ){
+                    blas::copy(Q, ldf * Z * sizeof(std::int32_t) / sizeof(float), (float *)TF, 1, (float *)F, 1);
+                    Q.wait_and_throw();
+                }
             }
-            auto end = steady_clock::now();
             auto used_time = duration<float>(end - start).count();
-
+            int calls = int(600. / used_time);
             // correct_host_data[0] += 1.0;
             if ( Z == -1){
                 for (int i = 1; i < runs; i++){
                     start = steady_clock::now();
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                     Q.wait_and_throw();
                     end = steady_clock::now();
                     used_time += duration<float>(end - start).count();
                     Q.copy(C, host_data, elems).wait();
+                    if ( BETA != 0.0 ){
+                        blas::copy(Q, ldc * N * sizeof(std::int8_t) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                        Q.wait_and_throw();
+                    }
                     int linear_id = 0;
                     for (size_t j = 0; j < N; j++) {
                         for (size_t k = 0; k < M; k++) {
@@ -510,19 +608,29 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
                         }
                         if (linear_id >= elems) break;
                     }
-                    
+                    if ( i % calls == 0 ){
+                        std::cout << " gemm has been running for " << (i/calls) *10 <<" minutes, and running " << i << " times\n";
+                    }
                 }
             }
             else{
                 for (int i = 1; i < runs; i++){
                     start = steady_clock::now();
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, ALPHA, A, lda, B, ldb, BETA, C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc, (float *)E, lde, 0, (float *)F, ldf);
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, GAMMA, (float *)C, ldc, (float *)E, lde, DELTA, (float *)F, ldf);
                     Q.wait_and_throw();
                     end = steady_clock::now();
                     used_time += duration<float>(end - start).count();
                     Q.copy(F, host_data, elems).wait();
+                    if ( BETA != 0.0 ){
+                        blas::copy(Q, ldc * N * sizeof(std::int8_t) / sizeof(float), (float *)TC, 1, (float *)C, 1);
+                        Q.wait_and_throw();
+                    }
+                    if ( DELTA != 0.0 ){
+                        blas::copy(Q, ldf * Z * sizeof(std::int32_t) / sizeof(float), (float *)TF, 1, (float *)F, 1);
+                        Q.wait_and_throw();
+                    }
                     int linear_id = 0;
                     for (size_t j = 0; j < Z; j++) {
                         for (size_t k = 0; k < M; k++) {
@@ -535,7 +643,9 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
                         }
                         if (linear_id >= elems) break;
                     }
-                    
+                    if ( i % calls == 0 ){
+                        std::cout << " gemm has been running for " << (i/calls) *10 <<" minutes, and running " << i << " times\n";
+                    }
                 }
             }
             return std::make_tuple(used_time, ok);
@@ -652,6 +762,8 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D)
     
 
     /* Free data */
+    free(TF, Q);
+    free(TC, Q);
     free(F, Q);
     free(E, Q);
     free(C, Q);
@@ -689,12 +801,17 @@ void usage(const char *pname)
               << "  -m                                  benchmark (MxK) x (KxN) square matrix multiplication (default: M = 4096)\n"
               << "  -n                                  benchmark (MxK) x (KxN) square matrix multiplication (default: N = 4096)\n"
               << "  -k                                  benchmark (MxK) x (KxN) square matrix multiplication (default: K = 4096)\n"
+              << "  -alpha                              benchmark alpha * (MxK) x (KxN) + beta * (MxN) square matrix multiplication (default: alpha=1.0)\n"
+              << "  -beta                              benchmark alpha * (MxK) x (KxN) + beta * (MxN) square matrix multiplication (default: beta=0.0)\n"
               << "  -z                                  benchmark (MxK) x (KxN) x (NxZ) square matrix multiplication (default: not use)\n"
+              << "  -gamma                              benchmark gamma * (alpha * (MxK) x (KxN) + beta * (MxN)) x (NxZ) + delta * (MxZ) square matrix multiplication (default: gamma=1.0)\n"
+              << "  -delta                              benchmark gamma * (alpha * (MxK) x (KxN) + beta * (MxN)) x (NxZ) + delta * (MxZ) square matrix multiplication (default: delta=0.0)\n"
               << "                                      fp32_vec can't use this args\n"
               << "  -c                                  running benchmark on which device (default running on all devices)\n"
               << "  -r                                  running benchmark multiple times, conflict with -d (default 1)\n"
               << "  -d                                  Duration of running benchmark, conflict with -r (default 1s)\n"
               << "                                      can be set to Xs or Xm or Xh, will overwrite -r\n"
+              
               << "\n"
               << "This benchmark uses the default DPC++ device, which can be controlled using\n"
               << "  the ONEAPI_DEVICE_SELECTOR environment variable\n";
@@ -725,6 +842,7 @@ int main(int argc, char **argv)
     auto pname = argv[0];
     int M = 4096, N = 4096, K = 4096, Z = -1;
     int R = 1, C = -1, D = 1;
+    double ALPHA = 1.0, BETA = 0.0, GAMMA = 1.0, DELTA = 0.0;
     std::string type = "none";
 
     if (argc <= 1)
@@ -732,7 +850,7 @@ int main(int argc, char **argv)
 
     if (argc > 1 && std::isalpha(argv[1][0])) {
         type = argv[1];
-        if (type == "int8" || type == "bf16"){
+        if (type == "int8"){
             N *= 2;
             M *= 2;
             K *= 2;
@@ -810,6 +928,42 @@ int main(int argc, char **argv)
             }
             i++;
         }
+        else if ((strcmp(argv[i], "-alpha") == 0)){
+            if (isdigit(argv[i + 1][0]) || ( argv[i + 1][0] == '-' && isdigit(argv[i + 1][1]) ) ) {
+                ALPHA = std::atof(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-beta") == 0)){
+            if (isdigit(argv[i + 1][0]) || ( argv[i + 1][0] == '-' && isdigit(argv[i + 1][1]) ) ) {
+                BETA = std::atof(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-gamma") == 0)){
+            if (isdigit(argv[i + 1][0]) || ( argv[i + 1][0] == '-' && isdigit(argv[i + 1][1]) ) ) {
+                GAMMA = std::atof(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
+        else if ((strcmp(argv[i], "-delta") == 0)){
+            if (isdigit(argv[i + 1][0]) || ( argv[i + 1][0] == '-' && isdigit(argv[i + 1][1]) ) ) {
+                DELTA = std::atof(argv[i + 1]);
+            } else {
+                usage(pname);
+                exit(-1);
+            }
+            i++;
+        }
         else if ((strcmp(argv[i], "-d") == 0)){
             std::string str = argv[i+1];
             if (str[str.size() - 1] == 'h'){
@@ -837,12 +991,11 @@ int main(int argc, char **argv)
     }
     if (M <= 0 || N <= 0 || K <= 0 || R < 1 || D < 1 || (type == "fp32_vec" && Z >= 1))
         usage(pname);
-    
     bool g_success = true;
     try { 
-        device d(default_selector_v);
+        device defaultd(default_selector_v);
        
-        auto P = d.get_platform();
+        auto P = defaultd.get_platform();
         auto RootDevices = P.get_devices();
         auto c = context(RootDevices);
         int device_id = 0;
@@ -867,39 +1020,39 @@ int main(int argc, char **argv)
 
             if (type == "double") {
                 if (device_has_fp64(d))
-                    test<double>(Q, M, N, K, Z, R, 1);
+                    test<double>(Q, M, N, K, Z, R, 1, ALPHA, BETA, GAMMA, DELTA);
                 else {
                     std::cout << "no FP64 capability on given SYCL device and type == \"double\"";
                     return 1;
                 }
             }
             else if (type == "single" || type == "float")
-                g_success = g_success && test<float>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<float>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "half")
-                g_success = g_success && test<half>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<half>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "fp16")
-                g_success = g_success && test<half>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<half>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "fp32_mat" )
-                g_success = g_success && test<float>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<float>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "bf16")
-                g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "int8")
-                g_success = g_success && test<std::int8_t>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<std::int8_t>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
             else if (type == "fp32_vec"){
-                g_success = g_success && test_gemv(Q, M, 1, K, Z, R, D);
+                g_success = g_success && test_gemv(Q, M, 1, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
                 N = 1;
             }
                 
             else if (type == "all") {
                 type = "half";
-                g_success = g_success && test<half>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<half>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
 
                 type = "float";
-                g_success = g_success && test<float>(Q, M, N, K, Z, R, D);
+                g_success = g_success && test<float>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
 
                 if (device_has_fp64(d)) {
                     type = "double";
-                    g_success = g_success && test<double>(Q, M, N, K, Z, R, D);
+                    g_success = g_success && test<double>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
                 }
             } else {
                 type = "none";
