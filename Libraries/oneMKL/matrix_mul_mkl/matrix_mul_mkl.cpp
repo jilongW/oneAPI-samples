@@ -498,23 +498,23 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
     /* Allocate A/B/C matrices */
     int lda = nice_ld<std::int8_t>(M);
     int ldb = nice_ld<std::int8_t>(K);
-    int ldc = nice_ld<std::int32_t>(M);
-    int lde = nice_ld<std::int32_t>(N);
-    int ldf = nice_ld<std::int32_t>(M);
+    int ldc = nice_ld<float>(M);
+    int lde = nice_ld<float>(N);
+    int ldf = nice_ld<float>(M);
 
     auto A = malloc_device<std::int8_t>(lda * K, Q);
     auto B = malloc_device<std::int8_t>(ldb * N, Q);
-    auto C = malloc_device<std::int32_t>(ldc * N, Q);
+    auto C = malloc_device<float>(ldc * N, Q);
     
-    auto E = malloc_device<std::int32_t>(lde * Z, Q);   
-    auto F = malloc_device<std::int32_t>(ldf * Z, Q);
-    auto TC = malloc_device<std::int32_t>(ldc * N, Q);
-    auto TF = malloc_device<std::int32_t>(ldf * Z, Q);
+    auto E = malloc_device<float>(lde * Z, Q);   
+    auto F = malloc_device<float>(ldf * Z, Q);
+    auto TC = malloc_device<float>(ldc * N, Q);
+    auto TF = malloc_device<float>(ldf * Z, Q);
 
     int rd_size = lda * K + ldb * N + 2 * lda * N + lde * Z + 2 * ldf * Z + 1;
-    std::vector<std::int32_t> host_vector(rd_size);
+    std::vector<float> host_vector(rd_size);
     auto host_data = host_vector.data();
-    std::vector<std::int32_t> correct_host_vector(rd_size);
+    std::vector<float> correct_host_vector(rd_size);
     auto correct_host_data = correct_host_vector.data();
     /* Measure time for a given number of GEMM calls */
     bool verify = false;
@@ -531,9 +531,9 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
             }
             else{
                 for (int i = 0; i < runs; i++){
-                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, (float *)C, ldc);
+                    blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
                     Q.wait_and_throw();
-                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, (float *)C, ldc , (float *)E, lde, 0, (float *)F, ldf);
+                    blas::gemm(Q, transpose::N, transpose::N, M, Z, N, 1, C, ldc , E, lde, 0, F, ldf);
                     Q.wait_and_throw();
                 }       
             }
@@ -675,7 +675,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
             for (size_t i = 0; i < M; i++) {
                 linear_id = j*ldc + i;
                 if (linear_id >= elems) break;
-                if (host_data[linear_id] != int32_t(K)) {
+                if (host_data[linear_id] != float(K)) {
                     ok = false;
                 }
             }
@@ -691,10 +691,8 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
             for (size_t i = 0; i < M; i++) {
                 linear_id = j*ldf + i;
                 if (linear_id >= elems) break;
-                if (host_data[linear_id] != int32_t(K) * N) {
-                    std::cout << int32_t(host_data[linear_id]) << " " <<int32_t(K) * int32_t(N) << " " << float(host_data[linear_id]) << " " << float(K) * N<<"\n";
+                if (host_data[linear_id] != float(K) * N) {
                     ok = false;
-                    exit(-1);
                 }
             }
             if (linear_id >= elems) break;
