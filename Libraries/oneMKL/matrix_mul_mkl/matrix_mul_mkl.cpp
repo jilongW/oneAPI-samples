@@ -857,9 +857,9 @@ int main(int argc, char **argv)
         argc--; argv++;
     }
 
-    if (argc == 2) M = N = K = std::atoi(argv[1]);
+    if (argc >= 2 && std::isdigit(argv[1][0])) M = N = K = std::atoi(argv[1]);
 
-    if (argc ==4) {
+    if (argc >= 4 && std::isdigit(argv[2][0]) && std::isdigit(argv[3][0]) && std::isdigit(argv[1][0])) {
         M = std::atoi(argv[1]);
         N = std::atoi(argv[2]);
         K = std::atoi(argv[3]);
@@ -1043,22 +1043,35 @@ int main(int argc, char **argv)
             }
                 
             else if (type == "all") {
-                type = "half";
+                type = "fp16";
                 g_success = g_success && test<half>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
 
-                type = "float";
+                type = "fp32_mat";
                 g_success = g_success && test<float>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
 
                 if (device_has_fp64(d)) {
                     type = "double";
                     g_success = g_success && test<double>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
                 }
+
+                type = "bf16";
+                g_success = g_success && test<oneapi::mkl::bfloat16>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
+
+                type = "int8";
+                g_success = g_success && test<std::int8_t>(Q, M, N, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
+
+                type = "fp32_vec";
+                g_success = g_success && test_gemv(Q, M, 1, K, Z, R, D, ALPHA, BETA, GAMMA, DELTA);
+
+                type = "all";
             } else {
                 type = "none";
                 usage(pname);
             }
+            std::cout << "\ntest finished for device " << device_id << "\n";
             device_id++;
-            std::cout << "\n";
+            std::cout << "###########################\n";
+            
             std::this_thread::sleep_for(std::chrono::seconds(1));
         } 
         
