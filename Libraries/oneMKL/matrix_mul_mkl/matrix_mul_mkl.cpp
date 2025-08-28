@@ -1003,14 +1003,14 @@ int main(int argc, char **argv)
             std::cout << "Can't find device " << C <<" , please check your system" << "\n"; 
             exit(-1);
         }
-        for (auto &d : RootDevices) {
-            device_info(d);
+        for (auto &d : RootDevices) {    
             if ( C != -1 ){
                 if( device_id != C){
                     device_id++;
                     continue;
                 }
             }
+            device_info(d);
             std::cout << "Running on device: " << device_id << "\n";
             queue Q(c, d);
 
