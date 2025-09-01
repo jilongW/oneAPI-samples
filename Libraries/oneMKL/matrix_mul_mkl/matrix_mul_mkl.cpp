@@ -528,6 +528,7 @@ bool test<std::int8_t>(queue &Q, int M, int N, int K, int Z, int R, int D, float
             if ( Z == -1){
                 for (int i = 0; i < runs; i++)
                     blas::gemm(Q, transpose::N, transpose::N, M, N, K, 1, A, lda, B, ldb, 0, C, ldc);
+                Q.wait_and_throw();
             }
             else{
                 for (int i = 0; i < runs; i++){
